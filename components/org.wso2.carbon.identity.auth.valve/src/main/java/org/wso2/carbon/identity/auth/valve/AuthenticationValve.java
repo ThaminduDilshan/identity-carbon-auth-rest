@@ -51,6 +51,9 @@ import org.wso2.carbon.identity.base.IdentityRuntimeException;
 import org.wso2.carbon.identity.core.util.IdentityConfigParser;
 import org.wso2.carbon.identity.core.util.IdentityTenantUtil;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
+import org.wso2.carbon.identity.oauth.common.exception.InvalidOAuthClientException;
+import org.wso2.carbon.identity.oauth2.IdentityOAuth2Exception;
+import org.wso2.carbon.identity.oauth2.util.OAuth2Util;
 import org.wso2.carbon.user.api.UserStoreException;
 import org.wso2.carbon.user.core.tenant.TenantManager;
 
@@ -61,6 +64,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import java.net.URISyntaxException;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -68,6 +72,7 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletResponse;
 
 import static org.wso2.carbon.identity.auth.service.util.Constants.AUTHENTICATED_WITH_BASIC_AUTH;
+import static org.wso2.carbon.identity.core.util.IdentityCoreConstants.ENABLE_TENANT_QUALIFIED_URLS;
 
 /**
  * AuthenticationValve can be used to intercept any request.
@@ -107,6 +112,18 @@ public class AuthenticationValve extends ValveBase {
             ResourceConfig securedResource = authenticationManager.getSecuredResource(
                     new ResourceConfigKey(normalizedRequestURI, request.getMethod()));
 
+            if (!isTenantQualifiedUrlsEnabled()) {
+                if ("/oauth2/authorize".equals(normalizedRequestURI)) {
+                    String consumerKey = request.getParameter("client_id");
+                    String loginTenantDomain = OAuth2Util.getTenantDomainOfOauthAppWithoutTenant(consumerKey);
+
+                    // TODO: Check for the correct logic of setting the tenant domain. Is it correct to directly
+                    //  set in thread local?
+                    if (StringUtils.isNotBlank(loginTenantDomain)) {
+                        PrivilegedCarbonContext.getThreadLocalCarbonContext().setTenantDomain(loginTenantDomain);
+                    }
+                }
+            }
 
             setRemoteAddressAndUserAgentToMDC(request);
 
@@ -172,6 +189,10 @@ public class AuthenticationValve extends ValveBase {
             APIErrorResponseHandler.handleErrorResponse(null, response, HttpServletResponse.SC_BAD_REQUEST, null);
         } catch (PatternSyntaxException e) {
             log.debug("Invalid pattern syntax of the request: ", e);
+            APIErrorResponseHandler.handleErrorResponse(null, response, HttpServletResponse.SC_BAD_REQUEST, null);
+        } catch (IdentityOAuth2Exception | InvalidOAuthClientException e) {
+            log.error("Unable to detect the tenant domain. Invalid client ID provided in the request.", e);
+            // TODO: Should this be "SC_UNAUTHORIZED" or "SC_BAD_REQUEST"?
             APIErrorResponseHandler.handleErrorResponse(null, response, HttpServletResponse.SC_BAD_REQUEST, null);
         } finally {
             // Clear 'IdentityError' thread local.
@@ -417,5 +438,12 @@ public class AuthenticationValve extends ValveBase {
             throw new AuthenticationFailException("Given URL contain un-normalized content. URL validation failed for "
                     + url);
         }
+    }
+
+    private boolean isTenantQualifiedUrlsEnabled() {
+
+        Map<String, Object> configuration = IdentityConfigParser.getInstance().getConfiguration();
+        String enableTenantQualifiedUrls = (String) configuration.get(ENABLE_TENANT_QUALIFIED_URLS);
+        return Boolean.parseBoolean(enableTenantQualifiedUrls);
     }
 }
